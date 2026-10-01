@@ -5,6 +5,9 @@ This repository is used for studying OEM stock firmware and bringing LineageOS u
 ## Core rule
 Treat the stock ROM as the reference implementation for hardware behavior. Do not guess when stock evidence can be collected.
 
+## Workspace convention
+Keep large stock images and extracted proprietary binaries outside Git unless they are intentionally managed elsewhere. Codex may analyze local paths containing stock artifacts and the Lineage source tree; record reproducible commands and textual evidence in the repository when useful.
+
 ## Default workflow
 1. Reproduce the failure on LineageOS.
 2. Collect Lineage runtime evidence: logcat, dmesg, getprop, service state, HAL state, relevant dumpsys output.

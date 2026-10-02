@@ -10,7 +10,7 @@ $OutDir = Join-Path $OutRoot "baseline_$stamp"
 $dirs = @('identity','boot','kernel','services','packages','audio','bluetooth','cpaa','filesystem','maps','meta')
 $dirs | ForEach-Object { New-Item -ItemType Directory -Force -Path (Join-Path $OutDir $_) | Out-Null }
 $script:Step = 0
-$script:TotalSteps = 39
+$script:TotalSteps = 42
 
 function Invoke-AdbText {
     param([string[]]$AdbArgs, [string]$RelativePath)
@@ -24,120 +24,62 @@ function Invoke-AdbText {
         "ERROR: $($_.Exception.Message)" | Out-File -FilePath $dest -Encoding utf8
     }
 }
-
-function Device-Adb {
-    param([string[]]$DeviceArgs, [string]$RelativePath)
-    Invoke-AdbText -AdbArgs (@('-s', $Device) + $DeviceArgs) -RelativePath $RelativePath
-}
-
-function Shell {
-    param([string]$Command, [string]$RelativePath)
-    Device-Adb -DeviceArgs @('shell', $Command) -RelativePath $RelativePath
-}
+function Device-Adb { param([string[]]$DeviceArgs,[string]$RelativePath); Invoke-AdbText -AdbArgs (@('-s',$Device)+$DeviceArgs) -RelativePath $RelativePath }
+function Shell { param([string]$Command,[string]$RelativePath); Device-Adb -DeviceArgs @('shell','sh','-c',$Command) -RelativePath $RelativePath }
 
 Write-Host "Connecting to $Device ..."
 & $Adb connect $Device | Out-Host
 & $Adb -s $Device wait-for-device
-
 $state = (& $Adb -s $Device get-state 2>&1 | Out-String).Trim()
 if ($state -ne 'device') { throw "ADB device state is '$state', expected 'device'." }
 $idProbe = (& $Adb -s $Device shell id 2>&1 | Out-String).Trim()
-if ($idProbe -notmatch 'uid=') { throw "ADB shell validation failed. Got: $idProbe" }
-
+if ($idProbe -notmatch 'uid=0\(root\)') { throw "Collector requires the already-root ADB shell seen on DUDU. Got: $idProbe" }
 $state | Set-Content -Encoding UTF8 (Join-Path $OutDir 'meta\adb-state.txt')
 $idProbe | Set-Content -Encoding UTF8 (Join-Path $OutDir 'identity\id.txt')
-Shell 'su -c id 2>&1' 'identity\su-id.txt'
+
 Shell 'date; uptime; uname -a; cat /proc/version' 'identity\system.txt'
 Shell 'getprop' 'identity\getprop.txt'
+Shell 'getenforce 2>&1; printf "selinux_enforce="; cat /sys/fs/selinux/enforce 2>&1' 'identity\selinux.txt'
 Shell 'getprop ro.build.fingerprint; getprop ro.build.version.incremental; getprop ro.build.version.release; getprop ro.build.version.sdk; getprop ro.vendor.build.version.sdk; getprop ro.product.first_api_level; getprop ro.build.version.security_patch; getprop ro.vendor.build.security_patch' 'identity\build-summary.txt'
-
 Shell 'dmesg 2>&1' 'boot\dmesg.txt'
 Device-Adb -DeviceArgs @('logcat','-d','-b','all','-v','threadtime') -RelativePath 'boot\logcat-all.txt'
 Shell 'cat /proc/cmdline 2>&1; echo; cat /proc/bootconfig 2>&1' 'boot\cmdline-bootconfig.txt'
 Shell 'cat /proc/modules 2>&1' 'kernel\proc-modules.txt'
 Shell 'lsmod 2>&1' 'kernel\lsmod.txt'
 Shell 'cat /proc/interrupts 2>&1' 'kernel\interrupts.txt'
-
 Shell 'ps -A -o USER,PID,PPID,VSZ,RSS,WCHAN,ADDR,S,NAME,ARGS 2>&1 || ps -A -ef 2>&1' 'services\ps.txt'
 Shell 'service list 2>&1' 'services\service-list.txt'
 Shell 'lshal 2>&1' 'services\lshal.txt'
-# Some Android 11 vendor binaries expose `hwservicemanager list` / `vndservicemanager list`
-# as long-running manager processes rather than CLI subcommands. Do not invoke them here:
-# they can block a baseline indefinitely. lshal + service list + ps provide the safe inventory.
 Shell 'dumpsys -l 2>&1' 'services\dumpsys-list.txt'
 Shell "ps -A -ef 2>&1 | grep -Ei 'sd|car|reverse|mirror|bluetooth|sdsdk|audio|radio|ril|cnss'" 'services\oem-processes.txt'
-
 Shell 'mount 2>&1' 'filesystem\mount.txt'
 Shell 'cat /proc/mounts 2>&1' 'filesystem\proc-mounts.txt'
 Shell 'df -h 2>&1' 'filesystem\df.txt'
 Shell 'ls -l /dev/block/by-name 2>&1' 'filesystem\block-by-name.txt'
 Shell 'cat /proc/partitions 2>&1' 'filesystem\partitions.txt'
-Shell 'ls -lZ /dev/goc_serial 2>&1; ls -lZ /dev 2>&1 | grep -Ei "goc|tty|uart|bt|bluetooth"' 'filesystem\bt-device-nodes.txt'
-
+Shell 'for n in /dev/goc_serial /dev/carplaySvc_serial; do echo "===== $n ====="; ls -lZ "$n" 2>&1; readlink -f "$n" 2>&1; done; echo "===== related dev nodes ====="; ls -lZ /dev 2>/dev/null | grep -Ei "goc|tty|uart|bt|bluetooth|carplay"' 'filesystem\device-nodes.txt'
 Shell 'pm list packages -f 2>&1' 'packages\packages-f.txt'
 Shell "pm list packages 2>&1 | grep -Ei 'dudu|carsyso|suding|bluetooth|mirror|carplay|aibox|reverse|media'" 'packages\oem-packages.txt'
-$pkgCmd = @'
-for p in $(pm list packages | cut -d: -f2 | grep -Ei 'dudu|carsyso|suding|bluetooth|mirror|carplay|aibox|reverse|media'); do
-  echo "===== $p ====="
-  pm path "$p"
-  dumpsys package "$p" 2>/dev/null | grep -E 'versionName=|versionCode=|codePath=|primaryCpuAbi=|secondaryCpuAbi=|nativeLibraryDir='
-done
-'@
-Shell $pkgCmd 'packages\oem-package-details.txt'
-
+Shell 'for p in com.carsyso.main com.carsyso.bluetooth com.carhomekit.mirror; do echo "===== $p ====="; pm path "$p" 2>&1; dumpsys package "$p" 2>/dev/null | grep -E "versionName=|versionCode=|codePath=|primaryCpuAbi=|secondaryCpuAbi=|nativeLibraryDir="; done' 'packages\oem-package-details.txt'
 Shell 'dumpsys audio 2>&1' 'audio\dumpsys-audio.txt'
 Shell 'dumpsys media.audio_flinger 2>&1' 'audio\audio-flinger.txt'
 Shell 'dumpsys media.audio_policy 2>&1' 'audio\audio-policy.txt'
 Shell 'tinymix 2>&1' 'audio\tinymix-passive.txt'
 Shell 'cat /proc/asound/cards 2>&1; echo; cat /proc/asound/pcm 2>&1; echo; cat /proc/asound/devices 2>&1' 'audio\proc-asound.txt'
+Shell 'for f in /proc/asound/card*/pcm*/sub*/status /proc/asound/card*/pcm*/sub*/hw_params; do [ -r "$f" ] && { echo "===== $f ====="; cat "$f"; }; done' 'audio\pcm-state.txt'
 Shell "find /vendor/etc /odm/etc -maxdepth 3 -type f 2>/dev/null | grep -Ei 'audio|mixer|sound' | sort" 'audio\config-paths.txt'
-
 Shell 'dumpsys bluetooth_manager 2>&1' 'bluetooth\bluetooth-manager.txt'
-Shell 'dumpsys bluetooth 2>&1' 'bluetooth\bluetooth.txt'
 Shell "getprop | grep -Ei 'bluetooth|bt\.|sdsdk|goc'" 'bluetooth\properties.txt'
 Shell "ps -A -ef 2>&1 | grep -Ei 'bluetooth|sdsdk|carsyso|suding|goc'" 'bluetooth\processes.txt'
-# Avoid whole-filesystem recursive find here; package/process/maps evidence is more useful
-# and this query can be added later against known paths from the static stock extraction.
-
-Shell "ps -A -ef 2>&1 | grep -Ei 'sdAutoReverse|sdCarplaySvc|MainAiBox|SdMirror|reverse|carplay|mirror'" 'cpaa\processes.txt'
+Shell "ps -A -ef 2>&1 | grep -Ei 'sdAutoReverse|sdCarplaySvc|sd_carplay|MainAiBox|SdMirror|reverse|carplay|mirror'" 'cpaa\processes.txt'
 Shell "getprop | grep -Ei 'carplay|androidauto|reverse|mirror|aibox|sd\.'" 'cpaa\properties.txt'
+Shell 'for pid in $(ps -A -o PID,ARGS 2>/dev/null | grep -Ei "sdAutoReverse|sdCarplaySvc|sd_carplay|com.carsyso.main|com.carsyso.bluetooth|com.carhomekit.mirror|sdsdk816|audioserver|android.hardware.audio" | grep -v grep | awk "{print \$1}"); do echo "===== PID $pid ====="; printf "cmdline: "; tr "\000" " " < /proc/$pid/cmdline 2>/dev/null; echo; printf "exe: "; readlink /proc/$pid/exe 2>&1; echo "-- maps --"; grep -E "\.so($| )|/apex/|/system/|/vendor/|/odm/|/product/" /proc/$pid/maps 2>/dev/null; echo "-- fds --"; ls -l /proc/$pid/fd 2>/dev/null; done' 'maps\relevant-process-runtime.txt'
+Shell 'ls -lt /data/tombstones 2>&1 | head -40' 'boot\tombstones.txt'
 
-$mapsCmd = @'
-for pid in $(ps -A -o PID,ARGS 2>/dev/null | grep -Ei 'sdAutoReverse|sdCarplaySvc|MainAiBox|SdMirror|bluetooth|sdsdk816|carsyso|audio' | grep -v grep | awk '{print $1}'); do
-  echo "===== PID $pid ====="
-  tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null; echo
-  cat /proc/$pid/maps 2>/dev/null | grep -E '\.so($| )|/apex/|/system/|/vendor/|/odm/|/product/'
-done
-'@
-$localMapsScript = Join-Path $env:TEMP "x21_maps_$stamp.sh"
-$mapsCmd | Set-Content -Encoding ascii $localMapsScript
-try {
-    Write-Host '[maps] pushing temporary read-only diagnostic helper'
-    & $Adb -s $Device push $localMapsScript /data/local/tmp/x21_maps.sh | Out-Null
-    Shell 'chmod 700 /data/local/tmp/x21_maps.sh; su -c /data/local/tmp/x21_maps.sh 2>&1; rm -f /data/local/tmp/x21_maps.sh' 'maps\relevant-process-maps.txt'
-} finally {
-    Remove-Item -Force -ErrorAction SilentlyContinue $localMapsScript
-    & $Adb -s $Device shell rm -f /data/local/tmp/x21_maps.sh 2>$null | Out-Null
-}
-
-$probeFile = Join-Path $OutDir 'identity\getprop.txt'
-$probe = Get-Content -Raw -ErrorAction SilentlyContinue $probeFile
-if (-not $probe -or $probe -notmatch '\[ro\.') {
-    throw "Collection validation failed: getprop output does not look like Android properties. Keep this directory for debugging, but do not use it as a runtime baseline: $OutDir"
-}
-
-$summary = @(
-    "device=$Device",
-    "collected=$(Get-Date -Format o)",
-    "output=$OutDir",
-    "adb_state=$state",
-    "shell_id=$idProbe",
-    'validation=passed',
-    'mode=diagnostic baseline; no setprop/remount/kill/restart/tinymix writes performed; temporary /data/local/tmp/x21_maps.sh removed after maps collection'
-)
+$probe = Get-Content -Raw -ErrorAction SilentlyContinue (Join-Path $OutDir 'identity\getprop.txt')
+if (-not $probe -or $probe -notmatch '\[ro\.') { throw "Collection validation failed: invalid getprop output: $OutDir" }
+$mapsProbe = Get-Content -Raw -ErrorAction SilentlyContinue (Join-Path $OutDir 'maps\relevant-process-runtime.txt')
+if (-not $mapsProbe -or $mapsProbe -notmatch '===== PID') { Write-Warning 'Process runtime capture contains no matched PIDs; baseline is otherwise retained.' }
+$summary = @("device=$Device","collected=$(Get-Date -Format o)","output=$OutDir","adb_state=$state","shell_id=$idProbe",'validation=passed','mode=read-only runtime baseline; ADB shell already root; no su/setprop/remount/kill/restart/tinymix writes')
 $summary | Set-Content -Encoding UTF8 (Join-Path $OutDir 'meta\README.txt')
-
-Write-Host ''
-Write-Host 'Baseline collection complete and validation passed.'
-Write-Host "Output: $OutDir"
-Write-Host 'Do not post raw logs publicly before checking for phone numbers, contacts, Wi-Fi names, IPs, account/device identifiers or other private data.'
+Write-Host ''; Write-Host 'Baseline collection complete and validation passed.'; Write-Host "Output: $OutDir"

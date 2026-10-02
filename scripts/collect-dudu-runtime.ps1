@@ -9,10 +9,13 @@ $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $OutDir = Join-Path $OutRoot "baseline_$stamp"
 $dirs = @('identity','boot','kernel','services','packages','audio','bluetooth','cpaa','filesystem','maps','meta')
 $dirs | ForEach-Object { New-Item -ItemType Directory -Force -Path (Join-Path $OutDir $_) | Out-Null }
+$script:Step = 0
+$script:TotalSteps = 39
 
-# Do not name this parameter $Args: $args is PowerShell's automatic variable.
 function Invoke-AdbText {
     param([string[]]$AdbArgs, [string]$RelativePath)
+    $script:Step++
+    Write-Host ("[{0:D2}/{1:D2}] {2}" -f $script:Step, $script:TotalSteps, $RelativePath)
     $dest = Join-Path $OutDir $RelativePath
     try {
         $output = & $Adb @AdbArgs 2>&1
@@ -58,8 +61,9 @@ Shell 'cat /proc/interrupts 2>&1' 'kernel\interrupts.txt'
 Shell 'ps -A -o USER,PID,PPID,VSZ,RSS,WCHAN,ADDR,S,NAME,ARGS 2>&1 || ps -A -ef 2>&1' 'services\ps.txt'
 Shell 'service list 2>&1' 'services\service-list.txt'
 Shell 'lshal 2>&1' 'services\lshal.txt'
-Shell 'hwservicemanager list 2>&1' 'services\hwservicemanager.txt'
-Shell 'vndservicemanager list 2>&1' 'services\vndservicemanager.txt'
+# Some Android 11 vendor binaries expose `hwservicemanager list` / `vndservicemanager list`
+# as long-running manager processes rather than CLI subcommands. Do not invoke them here:
+# they can block a baseline indefinitely. lshal + service list + ps provide the safe inventory.
 Shell 'dumpsys -l 2>&1' 'services\dumpsys-list.txt'
 Shell "ps -A -ef 2>&1 | grep -Ei 'sd|car|reverse|mirror|bluetooth|sdsdk|audio|radio|ril|cnss'" 'services\oem-processes.txt'
 
@@ -92,15 +96,12 @@ Shell 'dumpsys bluetooth_manager 2>&1' 'bluetooth\bluetooth-manager.txt'
 Shell 'dumpsys bluetooth 2>&1' 'bluetooth\bluetooth.txt'
 Shell "getprop | grep -Ei 'bluetooth|bt\.|sdsdk|goc'" 'bluetooth\properties.txt'
 Shell "ps -A -ef 2>&1 | grep -Ei 'bluetooth|sdsdk|carsyso|suding|goc'" 'bluetooth\processes.txt'
-Shell "find /system /system_ext /product /vendor /odm -type f 2>/dev/null | grep -Ei 'sdsdk816|libSdBTBridge|libcarsyso_serial_port|SdBluetooth'" 'bluetooth\component-paths.txt'
+# Avoid whole-filesystem recursive find here; package/process/maps evidence is more useful
+# and this query can be added later against known paths from the static stock extraction.
 
 Shell "ps -A -ef 2>&1 | grep -Ei 'sdAutoReverse|sdCarplaySvc|MainAiBox|SdMirror|reverse|carplay|mirror'" 'cpaa\processes.txt'
-Shell "find /system /system_ext /product /vendor /odm -type f 2>/dev/null | grep -Ei 'sdAutoReverse|sdCarplaySvc|MainAiBox|SdMirror|sd-reverse|libSdAutoReverse|libSdBridge|libSdCarplay|libAirPlay|libCoreUtils|sd_mdnsd'" 'cpaa\component-paths.txt'
 Shell "getprop | grep -Ei 'carplay|androidauto|reverse|mirror|aibox|sd\.'" 'cpaa\properties.txt'
 
-# Runtime library maps for relevant processes. Avoid nested shell quoting: write a
-# temporary diagnostic script under /data/local/tmp, execute it, then remove it.
-# This changes no firmware/configuration and leaves no file behind after success.
 $mapsCmd = @'
 for pid in $(ps -A -o PID,ARGS 2>/dev/null | grep -Ei 'sdAutoReverse|sdCarplaySvc|MainAiBox|SdMirror|bluetooth|sdsdk816|carsyso|audio' | grep -v grep | awk '{print $1}'); do
   echo "===== PID $pid ====="
@@ -111,6 +112,7 @@ done
 $localMapsScript = Join-Path $env:TEMP "x21_maps_$stamp.sh"
 $mapsCmd | Set-Content -Encoding ascii $localMapsScript
 try {
+    Write-Host '[maps] pushing temporary read-only diagnostic helper'
     & $Adb -s $Device push $localMapsScript /data/local/tmp/x21_maps.sh | Out-Null
     Shell 'chmod 700 /data/local/tmp/x21_maps.sh; su -c /data/local/tmp/x21_maps.sh 2>&1; rm -f /data/local/tmp/x21_maps.sh' 'maps\relevant-process-maps.txt'
 } finally {

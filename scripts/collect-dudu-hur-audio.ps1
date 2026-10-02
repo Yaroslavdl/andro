@@ -16,9 +16,9 @@ function Snap([string]$name){
  (A 'dumpsys media.audio_flinger 2>&1')|Out-File "$d\audio-flinger.txt" -Encoding utf8 -Width 4096
  (A 'dumpsys media.audio_policy 2>&1')|Out-File "$d\audio-policy.txt" -Encoding utf8 -Width 4096
  (A 'tinymix 2>&1')|Out-File "$d\tinymix.txt" -Encoding utf8 -Width 4096
- (A 'for f in /proc/asound/card*/pcm*/sub*/status /proc/asound/card*/pcm*/sub*/hw_params; do [ -r $f ] && { echo ===== $f =====; cat $f; }; done')|Out-File "$d\pcm-state.txt" -Encoding utf8 -Width 4096
+ (A 'for f in /proc/asound/card*/pcm*/sub*/status /proc/asound/card*/pcm*/sub*/hw_params; do if [ -r "$f" ]; then echo ===== "$f" =====; cat "$f"; fi; done')|Out-File "$d\pcm-state.txt" -Encoding utf8 -Width 4096
  (A 'cat /proc/asound/cards; echo; cat /proc/asound/pcm')|Out-File "$d\proc-asound.txt" -Encoding utf8 -Width 4096
- (A "for p in `$(pidof ght-play) `$(pidof sdAutoReverse); do [ -n \"`$p\" ] && { echo ===== PID `$p =====; tr '\000' ' ' < /proc/`$p/cmdline; echo; ls -lZ /proc/`$p/fd 2>&1; }; done")|Out-File "$d\audio-relevant-fds.txt" -Encoding utf8 -Width 4096
+ (A 'for p in $(pidof ght-play) $(pidof sdAutoReverse); do if [ -n "$p" ]; then echo ===== PID $p =====; cat /proc/$p/cmdline | tr "\000" " "; echo; ls -lZ /proc/$p/fd 2>&1; fi; done')|Out-File "$d\audio-relevant-fds.txt" -Encoding utf8 -Width 4096
 }
 Mark 'collector_started'
 & $Adb connect $Device|Out-Host; & $Adb -s $Device wait-for-device

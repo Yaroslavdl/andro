@@ -25,11 +25,12 @@ $pidCommand="ps -A -o PID,ARGS | awk 'NR > 1 && `$2 ~ /^(sdAutoReverse|sdCarplay
 Shell $pidCommand 'maps\pid-inventory.txt'
 $pidFile=Join-Path $OutDir 'maps\pid-inventory.txt'; $pidText=Get-Content -Raw -ErrorAction SilentlyContinue $pidFile
 if($pidText -match 'syntax error|inaccessible or not found|not found'){ throw "PID inventory command failed. See $pidFile" }
-$pids=@($pidText -split '\s+' | Where-Object { $_ -match '^\d+$' } | Select-Object -Unique)
-if($pids.Count -eq 0){ throw "PID inventory returned no relevant processes. See $pidFile" }
-$runtimeDest=Join-Path $OutDir 'maps\relevant-process-runtime.txt'; "matched_pids=$($pids -join ',')" | Set-Content $runtimeDest -Encoding utf8
-foreach($pid in $pids){ Write-Host "    [proc] PID $pid"; $cmd="echo ===== PID $pid =====; printf 'cmdline: '; tr '\000' ' ' < /proc/$pid/cmdline 2>&1; echo; printf 'exe: '; readlink /proc/$pid/exe 2>&1; echo --maps--; cat /proc/$pid/maps 2>&1; echo --fds--; ls -lZ /proc/$pid/fd 2>&1"; (& $Adb -s $Device shell $cmd 2>&1) | Add-Content $runtimeDest -Encoding utf8 }
+$matchedPids=@($pidText -split '\s+' | Where-Object { $_ -match '^\d+$' } | Select-Object -Unique)
+if($matchedPids.Count -eq 0){ throw "PID inventory returned no relevant processes. See $pidFile" }
+$runtimeDest=Join-Path $OutDir 'maps\relevant-process-runtime.txt'; "matched_pids=$($matchedPids -join ',')" | Set-Content $runtimeDest -Encoding utf8
+# $PID is a built-in read-only PowerShell automatic variable, so never use $pid as a loop variable.
+foreach($processId in $matchedPids){ Write-Host "    [proc] PID $processId"; $cmd="echo ===== PID $processId =====; printf 'cmdline: '; tr '\000' ' ' < /proc/$processId/cmdline 2>&1; echo; printf 'exe: '; readlink /proc/$processId/exe 2>&1; echo --maps--; cat /proc/$processId/maps 2>&1; echo --fds--; ls -lZ /proc/$processId/fd 2>&1"; (& $Adb -s $Device shell $cmd 2>&1) | Add-Content $runtimeDest -Encoding utf8 }
 Shell 'ls -lt /data/tombstones 2>&1 | head -40' 'boot\tombstones.txt'
 $probe=Get-Content -Raw -ErrorAction SilentlyContinue (Join-Path $OutDir 'identity\getprop.txt'); if(-not $probe -or $probe-notmatch'\[ro\.'){throw "Collection validation failed: invalid getprop output: $OutDir"}
 $runtimeProbe=Get-Content -Raw -ErrorAction SilentlyContinue $runtimeDest; if($runtimeProbe -match 'syntax error'){throw "Runtime /proc capture contains shell syntax error: $runtimeDest"}; if($runtimeProbe-notmatch'===== PID'){throw "Runtime /proc capture has no PID sections: $runtimeDest"}
-@("device=$Device","collected=$(Get-Date -Format o)","output=$OutDir","adb_state=$state","shell_id=$idProbe","matched_pids=$($pids -join ',')",'validation=passed','runtime_proc_capture=passed','mode=read-only runtime baseline; no su/setprop/remount/kill/restart/tinymix writes')|Set-Content -Encoding UTF8 (Join-Path $OutDir 'meta\README.txt'); Write-Host ''; Write-Host 'Baseline collection complete and validation passed.'; Write-Host "Matched runtime PIDs: $($pids -join ', ')"; Write-Host "Output: $OutDir"
+@("device=$Device","collected=$(Get-Date -Format o)","output=$OutDir","adb_state=$state","shell_id=$idProbe","matched_pids=$($matchedPids -join ',')",'validation=passed','runtime_proc_capture=passed','mode=read-only runtime baseline; no su/setprop/remount/kill/restart/tinymix writes')|Set-Content -Encoding UTF8 (Join-Path $OutDir 'meta\README.txt'); Write-Host ''; Write-Host 'Baseline collection complete and validation passed.'; Write-Host "Matched runtime PIDs: $($matchedPids -join ', ')"; Write-Host "Output: $OutDir"

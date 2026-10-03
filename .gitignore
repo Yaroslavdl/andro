@@ -1,0 +1,23 @@
+# Local firmware / proprietary artifacts
+*.img
+*.bin
+*.elf
+*.mbn
+*.zip
+*.7z
+*.rar
+*.apk
+*.apex
+*.so
+
+# Large/raw evidence should remain local unless intentionally sanitized
+local/
+raw/
+evidence/**/raw/
+
+# Common temporary/output files
+out/
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db

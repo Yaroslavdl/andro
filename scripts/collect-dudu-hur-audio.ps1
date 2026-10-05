@@ -10,6 +10,16 @@ $timeline=Join-Path $OutDir 'timeline.txt'
 function Mark([string]$m){$x="$(Get-Date -Format o) $m";Write-Host $x;$x|Add-Content $timeline -Encoding utf8}
 function WaitEnter([string]$event,[string[]]$lines){Write-Host '';foreach($line in $lines){Write-Host $line};[void](Read-Host);Mark $event}
 function A([string]$cmd){& $Adb -s $Device shell $cmd 2>&1}
+function Capture-Tinymix([string]$d){
+ $stdout=Join-Path $d 'tinymix-stdout.txt';$stderr=Join-Path $d 'tinymix-stderr.txt'
+ # Some Qualcomm mixer controls cannot be read as arrays and tinymix prints
+ # "Failed to mixer_ctl_get_array" to stderr. This is diagnostic noise, not a
+ # reason to abort the otherwise read-only capture.
+ $old=$ErrorActionPreference
+ try{$ErrorActionPreference='Continue';& $Adb -s $Device shell 'tinymix' 1> $stdout 2> $stderr;$code=$LASTEXITCODE}
+ finally{$ErrorActionPreference=$old}
+ if($code -ne 0){Mark "tinymix_nonzero_exit=$code"}
+}
 function Snap([string]$name){
  $d=Join-Path $OutDir $name;New-Item -ItemType Directory -Force -Path $d|Out-Null;Mark "snapshot_begin=$name"
  (A 'date; cat /proc/uptime; getprop sys.boot_completed')|Out-File "$d\state.txt" -Encoding utf8 -Width 4096
@@ -17,7 +27,7 @@ function Snap([string]$name){
  (A 'dumpsys audio 2>&1')|Out-File "$d\dumpsys-audio.txt" -Encoding utf8 -Width 4096
  (A 'dumpsys media.audio_flinger 2>&1')|Out-File "$d\audio-flinger.txt" -Encoding utf8 -Width 4096
  (A 'dumpsys media.audio_policy 2>&1')|Out-File "$d\audio-policy.txt" -Encoding utf8 -Width 4096
- (& $Adb -s $Device shell 'tinymix' 1> "$d\tinymix-stdout.txt" 2> "$d\tinymix-stderr.txt")
+ Capture-Tinymix $d
  (A 'for f in /proc/asound/card*/pcm*/sub*/status /proc/asound/card*/pcm*/sub*/hw_params; do if [ -r "$f" ]; then echo ===== "$f" =====; cat "$f"; fi; done')|Out-File "$d\pcm-state.txt" -Encoding utf8 -Width 4096
  (A 'cat /proc/asound/cards; echo; cat /proc/asound/pcm')|Out-File "$d\proc-asound.txt" -Encoding utf8 -Width 4096
  (A 'for f in /proc/asound/card*/pcm*/sub*/status; do if [ -r "$f" ]; then echo ===== "$f" =====; cat "$f"; sleep 0.25; cat "$f"; sleep 0.25; cat "$f"; fi; done')|Out-File "$d\pcm-progression.txt" -Encoding utf8 -Width 4096
@@ -40,5 +50,5 @@ WaitEnter 'FINAL_PAUSE_CONFIRMED_SILENT' @('[STEP 5/6] PAUSE AGAIN','Press PAUSE
 Snap '07_final_pause_silent';Start-Sleep -Seconds 8;Snap '08_final_pause_stable'
 Write-Host '';Write-Host '[STEP 6/6] DO NOT TOUCH ANYTHING';Write-Host 'Leave the player paused and HUR connected.';Write-Host 'Waiting 25 seconds automatically...';Mark 'post_pause_watch_begin';Start-Sleep -Seconds 25;Snap '09_post_pause_25s'
 Mark 'capturing_logs';Write-Host 'Capturing final logs...';(& $Adb -s $Device logcat -d -b all -v threadtime 2>&1)|Out-File (Join-Path $OutDir 'logcat-all.txt') -Encoding utf8 -Width 4096;(A 'dmesg 2>&1')|Out-File (Join-Path $OutDir 'dmesg.txt') -Encoding utf8 -Width 4096;Mark 'capture_complete'
-@("device=$Device","mode=$Mode",'scenario=HUR stable -> initial pause -> play audible -> pause silent -> play audible -> final pause silent -> 25s post-pause','read_only=true','operator ENTER markers explicitly mean audible/silent state was physically confirmed as instructed','there is no STOP action in this scenario; final state is PAUSE','AAC mode uses AAC test file; PCM mode uses WAV PCM 48kHz stereo S16_LE where possible')|Set-Content (Join-Path $OutDir 'README.txt') -Encoding utf8
+@("device=$Device","mode=$Mode",'scenario=HUR stable -> initial pause -> play audible -> pause silent -> play audible -> final pause silent -> 25s post-pause','read_only=true','operator ENTER markers explicitly mean audible/silent state was physically confirmed as instructed','there is no STOP action in this scenario; final state is PAUSE','AAC mode uses AAC test file; PCM mode uses WAV PCM 48kHz stereo S16_LE where possible','tinymix stderr is captured separately; unreadable Qualcomm array controls do not abort collection')|Set-Content (Join-Path $OutDir 'README.txt') -Encoding utf8
 Write-Host '';Write-Host '============================================================';Write-Host ' DONE';Write-Host " $OutDir";Write-Host '============================================================'

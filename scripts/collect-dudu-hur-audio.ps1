@@ -6,11 +6,10 @@ param(
 )
 $ErrorActionPreference='Stop'
 $stamp=Get-Date -Format 'yyyyMMdd_HHmmss'; $OutDir=Join-Path $OutRoot ("hur_audio_v2_{0}_{1}" -f $Mode.ToLower(),$stamp); New-Item -ItemType Directory -Force -Path $OutDir|Out-Null
-$timeline=Join-Path $OutDir 'timeline.txt'; $observations=Join-Path $OutDir 'operator-observations.txt'
+$timeline=Join-Path $OutDir 'timeline.txt'
 function Mark([string]$m){$x="$(Get-Date -Format o) $m";Write-Host $x;$x|Add-Content $timeline -Encoding utf8}
+function WaitEnter([string]$event,[string[]]$lines){Write-Host '';foreach($line in $lines){Write-Host $line};[void](Read-Host);Mark $event}
 function A([string]$cmd){& $Adb -s $Device shell $cmd 2>&1}
-function Ask([string]$event,[string]$text){Write-Host '';Write-Host $text;[void](Read-Host);Mark $event}
-function Observe([string]$event){$v=Read-Host 'Operator observation (AUDIBLE/SILENT/OTHER)';$x="$(Get-Date -Format o) $event=$v";$x|Add-Content $observations -Encoding utf8;Mark "operator_$event=$v"}
 function Snap([string]$name){
  $d=Join-Path $OutDir $name;New-Item -ItemType Directory -Force -Path $d|Out-Null;Mark "snapshot_begin=$name"
  (A 'date; cat /proc/uptime; getprop sys.boot_completed')|Out-File "$d\state.txt" -Encoding utf8 -Width 4096
@@ -28,13 +27,18 @@ function Snap([string]$name){
 Mark "collector_started mode=$Mode"
 & $Adb connect $Device|Out-Host; & $Adb -s $Device wait-for-device
 $id=(& $Adb -s $Device shell id 2>&1|Out-String).Trim();if($id-notmatch'uid=0\(root\)'){throw "Root ADB shell required: $id"};Mark "connected $id"
-Write-Host '';Write-Host "Mode: $Mode. HUR must already be stable. Use the SAME prepared local test file for this run. Do not change mixer controls manually."
-Ask 'READY_IDLE' 'Prepare the test file, keep playback STOPPED, then press ENTER.';Snap '00_idle_stable';Observe 'IDLE'
-Ask 'PLAY_PRESSED' 'Press PLAY now, then immediately return here and press ENTER.';Snap '01_play_immediate';Start-Sleep -Seconds 8;Snap '02_play_stable';Observe 'PLAY_STABLE'
-Ask 'PAUSE_PRESSED' 'Press PAUSE now, then immediately return here and press ENTER.';Snap '03_pause_immediate';Start-Sleep -Seconds 5;Snap '04_pause_stable';Observe 'PAUSE_STABLE'
-Ask 'RESUME_PRESSED' 'Press RESUME now, then immediately return here and press ENTER.';Snap '05_resume_immediate';Start-Sleep -Seconds 8;Snap '06_resume_stable';Observe 'RESUME_STABLE'
-Ask 'STOP_PRESSED' 'Press STOP now, then immediately return here and press ENTER.';Snap '07_stop_immediate';Start-Sleep -Seconds 8;Snap '08_stop_stable';Observe 'STOP_STABLE'
-Mark 'post_stop_watch_begin';Start-Sleep -Seconds 25;Snap '09_post_stop_25s';Observe 'POST_STOP_25S'
-Mark 'capturing_logs';(& $Adb -s $Device logcat -d -b all -v threadtime 2>&1)|Out-File (Join-Path $OutDir 'logcat-all.txt') -Encoding utf8 -Width 4096;(A 'dmesg 2>&1')|Out-File (Join-Path $OutDir 'dmesg.txt') -Encoding utf8 -Width 4096;Mark 'capture_complete'
-@("device=$Device","mode=$Mode",'scenario=HUR stable -> local media play -> pause -> resume -> stop -> 25s post-stop','read_only=true','AAC mode should use the same known AAC test file as the validated reference. PCM mode should use an ordinary local WAV/PCM file and avoid changing any other test variable where possible.','operator observations are stored in operator-observations.txt')|Set-Content (Join-Path $OutDir 'README.txt') -Encoding utf8
-Write-Host '';Write-Host "HUR audio v2 capture complete: $OutDir";Write-Host 'Keep this directory together with timeline.txt and operator-observations.txt.'
+Write-Host '';Write-Host '============================================================';Write-Host " AUDIO TEST: $Mode";Write-Host ' HUR must already show the X21 interface and work normally.';Write-Host ' The player only needs PLAY/PAUSE. There is NO STOP step.';Write-Host ' Do not change tinymix, volume routing or other settings.';Write-Host '============================================================'
+WaitEnter 'READY_PAUSED' @('[STEP 1/6] PREPARE','Open the test audio file on X21.','Leave it PAUSED: there must be NO sound from the tablet/HUR.','When ready, press ENTER here.')
+Snap '00_paused_initial'
+WaitEnter 'PLAY_CONFIRMED_AUDIBLE' @('[STEP 2/6] PLAY','Press PLAY on X21 now.','Wait until you can REALLY HEAR the test sound from the tablet through HUR.','Only after the sound is audible, press ENTER here.')
+Snap '01_play_audible';Start-Sleep -Seconds 8;Snap '02_play_stable'
+WaitEnter 'PAUSE_CONFIRMED_SILENT' @('[STEP 3/6] PAUSE','Press PAUSE on X21 now.','Wait until the sound from the tablet/HUR DISAPPEARS.','Only after there is silence, press ENTER here.')
+Snap '03_pause_silent';Start-Sleep -Seconds 5;Snap '04_pause_stable'
+WaitEnter 'RESUME_CONFIRMED_AUDIBLE' @('[STEP 4/6] PLAY AGAIN','Press PLAY on X21 again.','Wait until you can REALLY HEAR the test sound from the tablet through HUR again.','Only after the sound is audible, press ENTER here.')
+Snap '05_resume_audible';Start-Sleep -Seconds 8;Snap '06_resume_stable'
+WaitEnter 'FINAL_PAUSE_CONFIRMED_SILENT' @('[STEP 5/6] PAUSE AGAIN','Press PAUSE on X21. Do NOT close the player and do NOT disconnect HUR.','Wait until the sound DISAPPEARS.','Only after there is silence, press ENTER here.')
+Snap '07_final_pause_silent';Start-Sleep -Seconds 8;Snap '08_final_pause_stable'
+Write-Host '';Write-Host '[STEP 6/6] DO NOT TOUCH ANYTHING';Write-Host 'Leave the player paused and HUR connected.';Write-Host 'Waiting 25 seconds automatically...';Mark 'post_pause_watch_begin';Start-Sleep -Seconds 25;Snap '09_post_pause_25s'
+Mark 'capturing_logs';Write-Host 'Capturing final logs...';(& $Adb -s $Device logcat -d -b all -v threadtime 2>&1)|Out-File (Join-Path $OutDir 'logcat-all.txt') -Encoding utf8 -Width 4096;(A 'dmesg 2>&1')|Out-File (Join-Path $OutDir 'dmesg.txt') -Encoding utf8 -Width 4096;Mark 'capture_complete'
+@("device=$Device","mode=$Mode",'scenario=HUR stable -> initial pause -> play audible -> pause silent -> play audible -> final pause silent -> 25s post-pause','read_only=true','operator ENTER markers explicitly mean audible/silent state was physically confirmed as instructed','there is no STOP action in this scenario; final state is PAUSE','AAC mode uses AAC test file; PCM mode uses WAV PCM 48kHz stereo S16_LE where possible')|Set-Content (Join-Path $OutDir 'README.txt') -Encoding utf8
+Write-Host '';Write-Host '============================================================';Write-Host ' DONE';Write-Host " $OutDir";Write-Host '============================================================'
